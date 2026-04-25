@@ -3,11 +3,14 @@ import json
 from aiohttp import web, WSMsgType
 
 routes = web.RouteTableDef()
+
 players = {}
+
 
 @routes.get("/")
 async def index(request):
     return web.FileResponse("./static/index.html")
+
 
 @routes.get("/ws")
 async def websocket_handler(request):
@@ -15,45 +18,71 @@ async def websocket_handler(request):
     await ws.prepare(request)
 
     player_id = str(id(ws))
-    players[player_id] = {"x": 80, "y": 300}
+
+    players[player_id] = {
+        "x": 80,
+        "y": 300,
+        "color": "#2f80ed"
+    }
+
+    request.app["sockets"][player_id] = ws
+
+    await broadcast(request.app)
 
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
-            data = json.loads(msg.data)
+            try:
+                data = json.loads(msg.data)
 
-            if data["type"] == "move":
-                players[player_id] = {
-                    "x": data["x"],
-                    "y": data["y"]
-                }
+                if data.get("type") == "move":
+                    if player_id in players:
+                        players[player_id]["x"] = data.get("x", 80)
+                        players[player_id]["y"] = data.get("y", 300)
 
-                packet = json.dumps({
-                    "type": "players",
-                    "players": players
-                })
+                    await broadcast(request.app)
 
-                for socket in list(request.app["sockets"]):
-                    if not socket.closed:
-                        await socket.send_str(packet)
+            except Exception:
+                pass
 
         elif msg.type == WSMsgType.ERROR:
             break
 
     players.pop(player_id, None)
-    request.app["sockets"].discard(ws)
+    request.app["sockets"].pop(player_id, None)
+
+    await broadcast(request.app)
+
     return ws
 
+
+async def broadcast(app):
+    packet = json.dumps({
+        "type": "players",
+        "players": players
+    })
+
+    dead = []
+
+    for player_id, socket in app["sockets"].items():
+        if socket.closed:
+            dead.append(player_id)
+            continue
+
+        try:
+            await socket.send_str(packet)
+        except Exception:
+            dead.append(player_id)
+
+    for player_id in dead:
+        app["sockets"].pop(player_id, None)
+        players.pop(player_id, None)
+
+
 async def on_startup(app):
-    app["sockets"] = set()
+    app["sockets"] = {}
 
-@web.middleware
-async def socket_middleware(request, handler):
-    response = await handler(request)
-    if isinstance(response, web.WebSocketResponse):
-        request.app["sockets"].add(response)
-    return response
 
-app = web.Application(middlewares=[socket_middleware])
+app = web.Application()
 app.add_routes(routes)
 app.on_startup.append(on_startup)
 
