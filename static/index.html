@@ -1,19 +1,24 @@
 <!DOCTYPE html>
-<html>
+<html lang="vi">
 <head>
   <meta charset="UTF-8">
   <title>Parkour Online</title>
+
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
-      background: #111;
       overflow: hidden;
-      font-family: Arial;
+      background: #111;
+      font-family: "Segoe UI", Arial, sans-serif;
     }
 
     canvas {
       display: block;
-      background: linear-gradient(#78c6ff, #e8f6ff);
+      background: linear-gradient(#73c7ff, #dff4ff);
     }
 
     #info {
@@ -21,97 +26,273 @@
       top: 10px;
       left: 10px;
       color: white;
-      background: rgba(0,0,0,.5);
-      padding: 8px 12px;
-      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.55);
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      z-index: 2;
+    }
+
+    #status {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      color: white;
+      background: rgba(0, 0, 0, 0.55);
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      z-index: 2;
     }
   </style>
 </head>
+
 <body>
-  <div id="info">A/D hoặc ←/→ để chạy, Space để nhảy</div>
+  <div id="info">
+    A/D hoặc ←/→: chạy |
+    Space: double jump |
+    Shift: dash |
+    R: reset
+  </div>
+
+  <div id="status">Đang kết nối...</div>
+
   <canvas id="game"></canvas>
 
   <script>
     const canvas = document.getElementById("game");
     const ctx = canvas.getContext("2d");
+    const statusBox = document.getElementById("status");
 
     canvas.width = innerWidth;
     canvas.height = innerHeight;
 
+    addEventListener("resize", () => {
+      canvas.width = innerWidth;
+      canvas.height = innerHeight;
+    });
+
     const socketProtocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${socketProtocol}://${location.host}/ws`);
 
-    const player = {
-      x: 80,
-      y: 300,
-      w: 32,
-      h: 48,
-      vx: 0,
-      vy: 0,
-      speed: 5,
-      jump: -14,
-      grounded: false
+    socket.onopen = () => {
+      statusBox.textContent = "Online";
     };
 
+    socket.onclose = () => {
+      statusBox.textContent = "Mất kết nối";
+    };
+
+    let cameraX = 0;
+    let cameraY = 0;
     let otherPlayers = {};
 
     const keys = {};
 
-    const platforms = [
-      {x: 0, y: canvas.height - 60, w: canvas.width, h: 60},
-      {x: 220, y: canvas.height - 160, w: 180, h: 24},
-      {x: 520, y: canvas.height - 260, w: 180, h: 24},
-      {x: 850, y: canvas.height - 360, w: 180, h: 24},
-      {x: 1200, y: canvas.height - 260, w: 220, h: 24}
-    ];
+    addEventListener("keydown", e => {
+      keys[e.code] = true;
+    });
 
-    addEventListener("keydown", e => keys[e.code] = true);
-    addEventListener("keyup", e => keys[e.code] = false);
+    addEventListener("keyup", e => {
+      keys[e.code] = false;
+    });
+
+    const player = {
+      x: 80,
+      y: 300,
+      w: 34,
+      h: 48,
+      vx: 0,
+      vy: 0,
+      speed: 5.2,
+      jumpPower: -14,
+      grounded: false,
+      jumps: 0,
+      maxJumps: 2,
+      dashCooldown: 0,
+      facing: 1,
+      color: "#ff4757",
+      spawnX: 80,
+      spawnY: 300
+    };
+
+    const gravity = 0.7;
+    const friction = 0.82;
+
+    const platforms = [];
+    const spikes = [];
+    const coins = [];
+
+    function makeMap() {
+      platforms.length = 0;
+      spikes.length = 0;
+      coins.length = 0;
+
+      platforms.push({
+        x: -300,
+        y: canvas.height - 70,
+        w: 900,
+        h: 70
+      });
+
+      let x = 250;
+
+      for (let i = 0; i < 45; i++) {
+        const y = canvas.height - 130 - Math.random() * 330;
+        const w = 130 + Math.random() * 120;
+
+        platforms.push({
+          x,
+          y,
+          w,
+          h: 24
+        });
+
+        if (i % 4 === 0) {
+          spikes.push({
+            x: x + w / 2 - 18,
+            y: y - 28,
+            w: 36,
+            h: 28
+          });
+        }
+
+        if (i % 2 === 0) {
+          coins.push({
+            x: x + w / 2,
+            y: y - 45,
+            r: 10,
+            taken: false
+          });
+        }
+
+        x += 210 + Math.random() * 180;
+      }
+
+      platforms.push({
+        x: x + 200,
+        y: canvas.height - 180,
+        w: 260,
+        h: 30,
+        finish: true
+      });
+    }
+
+    makeMap();
+
+    let score = 0;
+    let won = false;
 
     socket.onmessage = e => {
       const data = JSON.parse(e.data);
+
       if (data.type === "players") {
         otherPlayers = data.players;
       }
     };
 
-    function update() {
+    function resetPlayer() {
+      player.x = player.spawnX;
+      player.y = player.spawnY;
       player.vx = 0;
+      player.vy = 0;
+      player.jumps = 0;
+      player.dashCooldown = 0;
+      won = false;
+    }
 
-      if (keys["KeyA"] || keys["ArrowLeft"]) player.vx = -player.speed;
-      if (keys["KeyD"] || keys["ArrowRight"]) player.vx = player.speed;
+    function collideRect(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
 
-      if (keys["Space"] && player.grounded) {
-        player.vy = player.jump;
-        player.grounded = false;
+    function update() {
+      if (keys["KeyR"]) {
+        resetPlayer();
+        keys["KeyR"] = false;
       }
 
-      player.vy += 0.7;
+      let move = 0;
+
+      if (keys["KeyA"] || keys["ArrowLeft"]) move -= 1;
+      if (keys["KeyD"] || keys["ArrowRight"]) move += 1;
+
+      if (move !== 0) {
+        player.vx += move * 0.7;
+        player.facing = move;
+      } else {
+        player.vx *= friction;
+      }
+
+      player.vx = Math.max(Math.min(player.vx, player.speed), -player.speed);
+
+      if (keys["Space"] && player.jumps < player.maxJumps) {
+        player.vy = player.jumpPower;
+        player.jumps++;
+        player.grounded = false;
+        keys["Space"] = false;
+      }
+
+      if ((keys["ShiftLeft"] || keys["ShiftRight"]) && player.dashCooldown <= 0) {
+        player.vx = player.facing * 18;
+        player.dashCooldown = 45;
+      }
+
+      if (player.dashCooldown > 0) {
+        player.dashCooldown--;
+      }
+
+      player.vy += gravity;
+
       player.x += player.vx;
       player.y += player.vy;
 
       player.grounded = false;
 
       for (const p of platforms) {
-        if (
-          player.x < p.x + p.w &&
-          player.x + player.w > p.x &&
-          player.y < p.y + p.h &&
-          player.y + player.h > p.y
-        ) {
-          if (player.vy > 0) {
+        if (collideRect(player, p)) {
+          if (player.vy > 0 && player.y + player.h - player.vy <= p.y + 8) {
             player.y = p.y - player.h;
             player.vy = 0;
             player.grounded = true;
+            player.jumps = 0;
+
+            if (p.finish) {
+              won = true;
+            }
           }
         }
       }
 
-      if (player.y > canvas.height + 200) {
-        player.x = 80;
-        player.y = 300;
-        player.vy = 0;
+      for (const s of spikes) {
+        if (collideRect(player, s)) {
+          resetPlayer();
+        }
       }
+
+      for (const c of coins) {
+        if (!c.taken) {
+          const dx = player.x + player.w / 2 - c.x;
+          const dy = player.y + player.h / 2 - c.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist < c.r + 24) {
+            c.taken = true;
+            score++;
+          }
+        }
+      }
+
+      if (player.y > canvas.height + 400) {
+        resetPlayer();
+      }
+
+      cameraX += (player.x - canvas.width / 3 - cameraX) * 0.08;
+      cameraY += (player.y - canvas.height / 2 - cameraY) * 0.05;
 
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
@@ -122,26 +303,127 @@
       }
     }
 
-    function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    function drawBackground() {
+      ctx.fillStyle = "#73c7ff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.fillStyle = "#333";
-      for (const p of platforms) {
-        ctx.fillRect(p.x, p.y, p.w, p.h);
+      ctx.save();
+      ctx.translate(-cameraX * 0.25, -cameraY * 0.1);
+
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      for (let i = 0; i < 20; i++) {
+        const x = i * 420;
+        const y = 80 + (i % 5) * 40;
+        ctx.beginPath();
+        ctx.arc(x, y, 35, 0, Math.PI * 2);
+        ctx.arc(x + 35, y - 10, 45, 0, Math.PI * 2);
+        ctx.arc(x + 80, y, 35, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      ctx.fillStyle = "#ff4757";
-      ctx.fillRect(player.x, player.y, player.w, player.h);
+      ctx.restore();
+    }
 
-      ctx.fillStyle = "#2f80ed";
+    function drawPlayer(x, y, color, label = "") {
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, player.w, player.h);
+
+      ctx.fillStyle = "#222";
+      ctx.fillRect(x + 7, y + 10, 6, 6);
+      ctx.fillRect(x + 21, y + 10, 6, 6);
+
+      if (label) {
+        ctx.fillStyle = "white";
+        ctx.font = "13px Arial";
+        ctx.fillText(label, x - 8, y - 10);
+      }
+    }
+
+    function drawSpike(s) {
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y + s.h);
+      ctx.lineTo(s.x + s.w / 2, s.y);
+      ctx.lineTo(s.x + s.w, s.y + s.h);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function draw() {
+      drawBackground();
+
+      ctx.save();
+      ctx.translate(-cameraX, -cameraY);
+
+      for (const p of platforms) {
+        ctx.fillStyle = p.finish ? "#27ae60" : "#333";
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+
+        ctx.fillStyle = "rgba(255,255,255,0.18)";
+        ctx.fillRect(p.x, p.y, p.w, 5);
+
+        if (p.finish) {
+          ctx.fillStyle = "white";
+          ctx.font = "18px Arial";
+          ctx.fillText("FINISH", p.x + 85, p.y - 15);
+        }
+      }
+
+      for (const s of spikes) {
+        drawSpike(s);
+      }
+
+      for (const c of coins) {
+        if (!c.taken) {
+          ctx.fillStyle = "#ffd700";
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#b8860b";
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r - 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
       for (const id in otherPlayers) {
         const p = otherPlayers[id];
 
-        if (Math.abs(p.x - player.x) < 2 && Math.abs(p.y - player.y) < 2) {
+        if (Math.abs(p.x - player.x) < 3 && Math.abs(p.y - player.y) < 3) {
           continue;
         }
 
-        ctx.fillRect(p.x, p.y, 32, 48);
+        drawPlayer(p.x, p.y, "#2f80ed", "player");
+      }
+
+      drawPlayer(player.x, player.y, player.color, "you");
+
+      ctx.restore();
+
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(10, canvas.height - 58, 210, 42);
+
+      ctx.fillStyle = "white";
+      ctx.font = "18px Arial";
+      ctx.fillText(`Coins: ${score}`, 24, canvas.height - 31);
+
+      if (player.dashCooldown <= 0) {
+        ctx.fillText("Dash: Ready", 115, canvas.height - 31);
+      } else {
+        ctx.fillText("Dash: " + player.dashCooldown, 115, canvas.height - 31);
+      }
+
+      if (won) {
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(canvas.width / 2 - 170, 80, 340, 90);
+
+        ctx.fillStyle = "white";
+        ctx.font = "28px Arial";
+        ctx.fillText("Bạn đã về đích!", canvas.width / 2 - 100, 122);
+
+        ctx.font = "16px Arial";
+        ctx.fillText("Nhấn R để chơi lại", canvas.width / 2 - 70, 150);
       }
     }
 
