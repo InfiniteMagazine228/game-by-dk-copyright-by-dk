@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Parkour Online</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      overflow: hidden;
+      font-family: Arial;
+    }
+
+    canvas {
+      display: block;
+      background: linear-gradient(#78c6ff, #e8f6ff);
+    }
+
+    #info {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      color: white;
+      background: rgba(0,0,0,.5);
+      padding: 8px 12px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">A/D hoặc ←/→ để chạy, Space để nhảy</div>
+  <canvas id="game"></canvas>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+
+    const socketProtocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${socketProtocol}://${location.host}/ws`);
+
+    const player = {
+      x: 80,
+      y: 300,
+      w: 32,
+      h: 48,
+      vx: 0,
+      vy: 0,
+      speed: 5,
+      jump: -14,
+      grounded: false
+    };
+
+    let otherPlayers = {};
+
+    const keys = {};
+
+    const platforms = [
+      {x: 0, y: canvas.height - 60, w: canvas.width, h: 60},
+      {x: 220, y: canvas.height - 160, w: 180, h: 24},
+      {x: 520, y: canvas.height - 260, w: 180, h: 24},
+      {x: 850, y: canvas.height - 360, w: 180, h: 24},
+      {x: 1200, y: canvas.height - 260, w: 220, h: 24}
+    ];
+
+    addEventListener("keydown", e => keys[e.code] = true);
+    addEventListener("keyup", e => keys[e.code] = false);
+
+    socket.onmessage = e => {
+      const data = JSON.parse(e.data);
+      if (data.type === "players") {
+        otherPlayers = data.players;
+      }
+    };
+
+    function update() {
+      player.vx = 0;
+
+      if (keys["KeyA"] || keys["ArrowLeft"]) player.vx = -player.speed;
+      if (keys["KeyD"] || keys["ArrowRight"]) player.vx = player.speed;
+
+      if (keys["Space"] && player.grounded) {
+        player.vy = player.jump;
+        player.grounded = false;
+      }
+
+      player.vy += 0.7;
+      player.x += player.vx;
+      player.y += player.vy;
+
+      player.grounded = false;
+
+      for (const p of platforms) {
+        if (
+          player.x < p.x + p.w &&
+          player.x + player.w > p.x &&
+          player.y < p.y + p.h &&
+          player.y + player.h > p.y
+        ) {
+          if (player.vy > 0) {
+            player.y = p.y - player.h;
+            player.vy = 0;
+            player.grounded = true;
+          }
+        }
+      }
+
+      if (player.y > canvas.height + 200) {
+        player.x = 80;
+        player.y = 300;
+        player.vy = 0;
+      }
+
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: "move",
+          x: player.x,
+          y: player.y
+        }));
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "#333";
+      for (const p of platforms) {
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+      }
+
+      ctx.fillStyle = "#ff4757";
+      ctx.fillRect(player.x, player.y, player.w, player.h);
+
+      ctx.fillStyle = "#2f80ed";
+      for (const id in otherPlayers) {
+        const p = otherPlayers[id];
+
+        if (Math.abs(p.x - player.x) < 2 && Math.abs(p.y - player.y) < 2) {
+          continue;
+        }
+
+        ctx.fillRect(p.x, p.y, 32, 48);
+      }
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>
